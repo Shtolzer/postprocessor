@@ -3,27 +3,16 @@ import re
 import shutil
 import sys
 from datetime import datetime
+import glob
 
-def merge_postprocessors(mill_dir="mill_post", lathe_dir="lathe_post"):
+def merge_postprocessors():
     """
     Объединяет mill и lathe постпроцессоры в текущей директории
     """
     try:
         # Получаем текущую директорию скрипта
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        if not current_dir:
-            current_dir = os.getcwd()
-        
-        # Проверяем существование исходных директорий
-        mill_path = os.path.join(current_dir, mill_dir)
-        lathe_path = os.path.join(current_dir, lathe_dir)
-        
-        if not os.path.exists(mill_path):
-            print(f"Ошибка: Директория mill постпроцессора не найдена: {mill_path}")
-            return None
-        if not os.path.exists(lathe_path):
-            print(f"Ошибка: Директория lathe постпроцессора не найдена: {lathe_path}")
-            return None
+        current_dir = os.getcwd()
+        print(f"Текущая директория: {current_dir}")
 
         # Создаем выходную директорию
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -31,52 +20,41 @@ def merge_postprocessors(mill_dir="mill_post", lathe_dir="lathe_post"):
         os.makedirs(combined_dir, exist_ok=True)
         print(f"Создана выходная директория: {combined_dir}")
 
-        # Основные файлы для обработки
-        tcl_files = []
-        def_files = []
-
-        # Функция для поиска файлов в директории
-        def find_post_files(directory):
-            found = {"tcl": [], "def": []}
-            for root, _, files in os.walk(directory):
-                for file in files:
-                    if file.endswith('.tcl'):
-                        found["tcl"].append(os.path.join(root, file))
-                    elif file.endswith('.def'):
-                        found["def"].append(os.path.join(root, file))
-            return found
-
-        # Поиск файлов в mill и lathe постпроцессорах
-        mill_files = find_post_files(mill_path)
-        lathe_files = find_post_files(lathe_path)
+        # Поиск файлов постпроцессоров
+        all_files = glob.glob(os.path.join(current_dir, '*.*'))
         
-        # Объединение файлов
-        all_files = {
-            "tcl": mill_files["tcl"] + lathe_files["tcl"],
-            "def": mill_files["def"] + lathe_files["def"]
-        }
+        # Фильтрация файлов по типам
+        tcl_files = [f for f in all_files if f.lower().endswith('.tcl')]
+        def_files = [f for f in all_files if f.lower().endswith('.def')]
+        pui_files = [f for f in all_files if f.lower().endswith('.pui')]
 
-        # Копирование всех файлов в целевую директорию
-        for file_list in all_files.values():
-            for file_path in file_list:
+        print(f"Найдено TCL-файлов: {len(tcl_files)}")
+        print(f"Найдено DEF-файлов: {len(def_files)}")
+        print(f"Найдено PUI-файлов: {len(pui_files)}")
+
+        if not tcl_files:
+            print("Ошибка: Не найдено ни одного TCL-файла!")
+            return None
+
+        # Копируем все файлы в целевую директорию
+        for file_path in all_files:
+            if not os.path.isdir(file_path):
                 file_name = os.path.basename(file_path)
                 shutil.copy2(file_path, os.path.join(combined_dir, file_name))
 
         # Обработка главного TCL-файла
-        main_tcl = find_main_tcl(combined_dir)
-        if main_tcl:
-            print(f"Обработка главного TCL-файла: {main_tcl}")
-            add_safety_checks(main_tcl)
-            merge_tcl_content(combined_dir, main_tcl)
-        else:
-            print("Предупреждение: Главный TCL-файл не найден")
+        main_tcl = find_main_tcl(combined_dir) or os.path.join(combined_dir, os.path.basename(tcl_files[0]))
+        print(f"Главный TCL-файл: {os.path.basename(main_tcl)}")
+        
+        add_safety_checks(main_tcl)
+        merge_tcl_content(combined_dir, main_tcl)
 
         # Объединение DEF-файлов
-        if all_files["def"]:
-            def_files = [f for f in os.listdir(combined_dir) if f.endswith('.def')]
-            if def_files:
-                main_def = os.path.join(combined_dir, def_files[0])
-                merge_def_files(main_def, [os.path.join(combined_dir, f) for f in def_files[1:]])
+        if len(def_files) > 1:
+            def_files_in_combined = [f for f in os.listdir(combined_dir) if f.lower().endswith('.def')]
+            if def_files_in_combined:
+                main_def = os.path.join(combined_dir, def_files_in_combined[0])
+                merge_def_files(main_def, [os.path.join(combined_dir, f) for f in def_files_in_combined[1:]])
 
         print(f"Объединение завершено успешно!")
         return combined_dir
@@ -90,12 +68,13 @@ def merge_postprocessors(mill_dir="mill_post", lathe_dir="lathe_post"):
 def find_main_tcl(directory):
     """Находит главный TCL-файл в директории"""
     for file in os.listdir(directory):
-        if file.endswith('.tcl'):
+        if file.lower().endswith('.tcl'):
             if 'event_handler' in file.lower() or 'main' in file.lower():
                 return os.path.join(directory, file)
+    
     # Если не нашли по имени, берем первый попавшийся
     for file in os.listdir(directory):
-        if file.endswith('.tcl'):
+        if file.lower().endswith('.tcl'):
             return os.path.join(directory, file)
     return None
 
@@ -105,8 +84,12 @@ def merge_tcl_content(directory, main_tcl_path):
         # Собираем содержимое всех TCL-файлов
         all_content = []
         for file in os.listdir(directory):
-            if file.endswith('.tcl') and file != os.path.basename(main_tcl_path):
-                with open(os.path.join(directory, file), 'r', encoding='utf-8') as f:
+            file_path = os.path.join(directory, file)
+            if (file.lower().endswith('.tcl') and 
+                file_path != main_tcl_path and 
+                os.path.isfile(file_path)):
+                
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     all_content.append(f.read())
         
         # Добавляем в конец главного файла
@@ -164,7 +147,7 @@ def merge_def_files(target_path, source_paths):
 def add_safety_checks(tcl_file_path):
     """Добавляет защитные проверки в TCL-скрипт"""
     try:
-        with open(tcl_file_path, 'r+', encoding='utf-8') as f:
+        with open(tcl_file_path, 'r+', encoding='utf-8', errors='ignore') as f:
             content = f.read()
             
             # Добавляем инициализацию в начало файла
@@ -189,9 +172,10 @@ proc safe_get_var {var_name default} {
             # Добавляем проверки в проблемную процедуру
             if 'PB_CMD_kin_init_mill_turn' in content:
                 content = re.sub(
-                    r'(\s*set\s+base_name\s+\[file rootname\s+\$mom_event_handler_file_name\])',
+                    r'(\s*set\s+base_name\s+\[file\s+rootname\s+\$mom_event_handler_file_name\])',
                     r'    set base_name [safe_get_var mom_event_handler_file_name "combined_post"]',
-                    content
+                    content,
+                    flags=re.IGNORECASE
                 )
             
             # Перезаписываем файл
@@ -205,21 +189,8 @@ proc safe_get_var {var_name default} {
         print(f"Ошибка при добавлении защитных проверок: {str(e)}")
 
 if __name__ == "__main__":
-    # Параметры по умолчанию
-    mill_dir = "mill_post"
-    lathe_dir = "lathe_post"
-    
-    # Обработка аргументов командной строки
-    if len(sys.argv) > 1:
-        mill_dir = sys.argv[1]
-    if len(sys.argv) > 2:
-        lathe_dir = sys.argv[2]
-    
-    print(f"Начало объединения постпроцессоров:")
-    print(f"  Mill директория: {mill_dir}")
-    print(f"  Lathe директория: {lathe_dir}")
-    
-    result_dir = merge_postprocessors(mill_dir, lathe_dir)
+    print("Начало объединения постпроцессоров в текущей директории")
+    result_dir = merge_postprocessors()
     
     if result_dir:
         print(f"\nОбъединенный постпроцессор создан в:")
@@ -228,6 +199,6 @@ if __name__ == "__main__":
         print("  1. Откройте Post Builder")
         print("  2. Выберите File -> Open")
         print(f"  3. Перейдите в директорию: {result_dir}")
-        print("  4. Откройте .pui файл")
+        print("  4. Откройте .pui файл (если есть) или .tcl файл")
     else:
         print("Объединение не удалось. Проверьте сообщения об ошибках.")
